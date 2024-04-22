@@ -11,12 +11,13 @@
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize);
+void serve_static(int fd, char *filename, int filesize, char *method);
 void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
                  char *longmsg);
 
+/* port 번호를 인자로 받아 클라이언트 요청이 올 때마다 새로 연결 소켓을 생성하여 doit 함수 호출 */
 int main(int argc, char **argv) {
   int listenfd, connfd;
   char hostname[MAXLINE], port[MAXLINE];
@@ -59,12 +60,12 @@ void doit(int fd){
   printf("%s", buf);
   sscanf(buf, "%s %s %s", method, uri, version);
   // tiny는 get 메소드만 지원 (다른 메소드 요청 시 에러)
-  if(strcasecmp(method, "GET")){
+  if(strcasecmp(method, "GET") && strcasecmp(method, "HEAD")){
     clienterror(fd, method, "501", "Not implemented",
               "Tiny does not implement this method");
     return;
   }
-  // GET method면 읽어들이고, 다른 요청 헤더들을 무시한다
+  // HEAD,  GET method면 읽어들이고, 다른 요청 헤더들을 무시한다
   read_requesthdrs(&rio);
   // get 요청으로부터 uri 파싱
   // 요청이 정적인지 동적인지 나타내는 플래그 설정
@@ -85,7 +86,7 @@ void doit(int fd){
       return;
     }
     // 맞으면 정적 컨텐츠 클라이언트에게 제공
-    serve_static(fd, filename, sbuf.st_size);
+    serve_static(fd, filename, sbuf.st_size, method);
   }
   // 동적 컨텐츠 일 경우 (정적 컨텐츠 흐름과 동일)
   else{
@@ -94,7 +95,7 @@ void doit(int fd){
                   "Tiny couldn't run the CGI program");
       return;
     }
-    serve_dynamic(fd, filename, cgiargs);
+    serve_dynamic(fd, filename, cgiargs, method);
   }
 }
 
@@ -161,32 +162,38 @@ int parse_uri(char *uri, char *filename, char *cgiargs){
   }
 }
 
-void serve_static(int fd, char *filename, int filesize){
+void serve_static(int fd, char *filename, int filesize, char *method){
   int srcfd;                // 파일 디스크립터
   char *srcp,               // 파일 내용을 메모리에 매핑한 포인터
        filetype[MAXLINE],   // 파일의 MIME 타입
        buf[MAXBUF];         // 응답 헤더를 저장할 버퍼
 
   /* 응답 헤더 생성 및 전송 */
-  get_filetype(filename, filetype);                         // 파일 타입 결정
-  sprintf(buf, "HTTP/1.0 200 OK\r\n");                      // 응답 라인 작성
+  get_filetype(filename, filetype);                           // 파일 타입 결정
+  sprintf(buf, "HTTP/1.0 200 OK\r\n");                        // 응답 라인 작성
   // 응답 헤더
-  sprintf(buf, "%sServer: Tiny Web Server\r\n", buf);       // 서버 정보 추가
-  sprintf(buf, "%sConnections: close\r\n", buf);            // 연결 종료 정보 추가
-  sprintf(buf, "%sContent-length: %d\r\n", buf, filesize);  // 컨텐츠 길이 추가
-  sprintf(buf, "%sContent-type: %s\r\n\r\n", buf, filetype); // 컨텐츠 타입 추가
+  sprintf(buf, "%sServer: Tiny Web Server\r\n", buf);         // 서버 정보 추가
+  sprintf(buf, "%sConnections: close\r\n", buf);              // 연결 종료 정보 추가
+  sprintf(buf, "%sContent-length: %d\r\n", buf, filesize);    // 컨텐츠 길이 추가
+  sprintf(buf, "%sContent-type: %s\r\n\r\n", buf, filetype);  // 컨텐츠 타입 추가
 
   /* 응답 라인과 헤더를 클라이언트에게 보냄 */
   Rio_writen(fd, buf, strlen(buf)); 
   printf("Response headers: \n");
   printf("%s", buf);
 
+  if(strcasecmp(method, "HEAD") == 0)
+    return;
   /* 응답 바디 전송 */
-  srcfd = Open(filename, O_RDONLY, 0);                       // 파일 열기
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // 파일을 메모리에 동적할당
-  Close(srcfd);                                              // 파일 닫기
+  srcfd = Open(filename, O_RDONLY, 0);                        // 파일 열기
+  // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // 파일을 메모리에 동적할당
+  srcp = (char *) Malloc(filesize);                           // mmap 대신 malloc 사용
+  Rio_readn(srcfd, srcp, filesize);           
+  
+  Close(srcfd);                                             // 파일 닫기
   Rio_writen(fd, srcp, filesize);                           // 클라이언트에게 파일 내용 전송
-  Munmap(srcp, filesize);                                   // 메모리 할당 해제
+  // Munmap(srcp, filesize);                                // 메모리 할당 해제
+  free(srcp);                                               // mummap 대신 free 사용                            
 }
 
 void get_filetype(char *filename, char *filetype){
@@ -198,11 +205,13 @@ void get_filetype(char *filename, char *filetype){
     strcpy(filetype, "image/png");
   else if (strstr(filename, ".jpg"))
     strcpy(filetype, "image/jpeg");
+  else if (strstr(filename, ".mp4"))
+    strcpy(filetype, "video/mp4");
   else
     strcpy(filetype, "text/plain");
 }
 
-void serve_dynamic(int fd, char *filename, char *cgiargs){
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method){
   char buf[MAXLINE], *emptylist[] = {NULL};
 
   sprintf(buf, "HTTP/1.0 200 OK\r\n");
@@ -211,8 +220,12 @@ void serve_dynamic(int fd, char *filename, char *cgiargs){
   Rio_writen(fd, buf, strlen(buf));
 
   if(Fork() == 0){
+    // QUERY_STRING 환경변수를 요청 URI의 CGI 인자들로 초기화
     setenv("QUERY_STRING", cgiargs, 1);
+    setenv("REQUEST_METHOD", method, 1);
+    // 자식은 자식의 표준 출력을 연결 파일 식별자로 재지정
     Dup2(fd, STDOUT_FILENO);
+    // CGI 프로그램을 로드하고 실행
     Execve(filename, emptylist, environ);
   }
   Wait(NULL);
