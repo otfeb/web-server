@@ -19,6 +19,16 @@ void do_response(int p_connfd, int p_clientfd);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
 int parse_uri(char *uri, char *uri_ptos, char *host, char *port);
 
+void sigchld_handler(int sig){
+  // [인자값 의미]
+  // -1 : 임의의 자식 프로세스를 기다림
+  // 0 : ?
+  // WNOHANG : 기다리는 PID가 종료되지 않아서 즉시 종료 상태를 회수 할 수 없는 상황에서 호출자는 차단되지 않고 반환값으로 0을 받음
+  while(waitpid(-1, 0, WNOHANG) > 0){
+    return;
+  }
+}
+
 int main(int argc, char **argv) {
   int listenfd, *p_connfd;
   char hostname[MAXLINE], port[MAXLINE];
@@ -31,19 +41,20 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
+  Signal(SIGCHLD, sigchld_handler);
   listenfd = Open_listenfd(argv[1]);
 
   while(1){
     clientlen = sizeof(clientaddr);
-    // connfd = Malloc(sizeof(int));
     // 클라이언트 연결 요청을 proxy의 연결 식별자가 accept
     p_connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
-
-    /* 연결이 성공했다는 메세지를 위해. Getnameinfo를 호출해서 hostname과 port가 채워짐 */
-    Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE, 0);
-    printf("Accepted connection from (%s, %s)\n", hostname, port);
-    // Pthread_create(&tid, NULL, thread, connfd);
-    doit(p_connfd);
+    if(Fork() == 0){
+      Close(listenfd);
+      doit(p_connfd);
+      Close(p_connfd);
+      exit(0);
+    }
+    // 안해도 메모리 누수 없음???
     Close(p_connfd);
   }
 }
