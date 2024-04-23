@@ -14,41 +14,40 @@ int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize, char *method);
 void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs, char *method);
-void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
-                 char *longmsg);
+void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
 
 /* port 번호를 인자로 받아 클라이언트 요청이 올 때마다 새로 연결 소켓을 생성하여 doit 함수 호출 */
 int main(int argc, char **argv) {
   int listenfd, connfd;
   char hostname[MAXLINE], port[MAXLINE];
-  socklen_t clientlen;
-  struct sockaddr_storage clientaddr;
+  socklen_t clientlen;                              // 클라이언트 주소 구조체 크기
+  struct sockaddr_storage clientaddr;               // 클라이언트 주소 정보 저장하기 위한 구조체
 
   /* Check command line args */
-  if (argc != 2) {
+  // 넘어온 포트번호가 없으면 에러 처리 후 종료
+  if (argc != 2) {              
     fprintf(stderr, "usage: %s <port>\n", argv[0]);
     exit(1);
   }
-
   // 듣기 소켓 오픈
   listenfd = Open_listenfd(argv[1]);
   // 무한 서버 루프 실행
   while (1) {
     clientlen = sizeof(clientaddr);
     // 반복적으로 연결 요청 접수
-    connfd = Accept(listenfd, (SA *)&clientaddr,
-                    &clientlen);  // line:netp:tiny:accept
-    Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE,
-                0);
+    connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);  // line:netp:tiny:accept
+    Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE, 0);
     printf("Accepted connection from (%s, %s)\n", hostname, port);
     doit(connfd);   // 트랜잭션 수행
     Close(connfd);  // 자신 쪽의 연결 끝 닫음
   }
 }
 
+// 클라이언트의 요청 처리
 void doit(int fd){
   int is_static;
   struct stat sbuf;
+  // MAXLINE = 8192 (8KB)
   char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
   char filename[MAXLINE], cgiargs[MAXLINE];
   rio_t rio;
@@ -65,10 +64,11 @@ void doit(int fd){
               "Tiny does not implement this method");
     return;
   }
-  // HEAD,  GET method면 읽어들이고, 다른 요청 헤더들을 무시한다
+  // HEAD, GET method면 헤더를 읽어들이고, 다른 요청은 무시
+  // HEAD 메소드일때만 read_requesthdrs를 실행해야 하는거 아닌가??
   read_requesthdrs(&rio);
   // get 요청으로부터 uri 파싱
-  // 요청이 정적인지 동적인지 나타내는 플래그 설정
+  // 요청이 정적인지 동적인지 나타내는 플래그 설정 (정적이면 1, 동적이면 0 반환)
   is_static = parse_uri(uri, filename, cgiargs);
   // 파일이 디스크 상에 없으면, 클라이언트에게 에러 메시지 보내고 리턴
   if(stat(filename, &sbuf) < 0){
@@ -78,8 +78,7 @@ void doit(int fd){
   }
   // 정적 컨텐츠 일 경우
   if(is_static){
-    // 파일이 보통 파일이며 읽기 권한을 가지고 있는지
-    // 아니면 에러 후 리턴
+    // 파일이 보통 파일이며 읽기 권한을 가지고 있는지 (아니면 에러 후 리턴)
     if(!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)){
       clienterror(fd, filename, "403", "Forbidden",
                   "Tiny couldn't read the file");
@@ -133,7 +132,7 @@ void read_requesthdrs(rio_t *rp){
 
 int parse_uri(char *uri, char *filename, char *cgiargs){
   char *ptr;
-
+  // cgi-bin가 문자열에 없는 경우는 정적 컨텐츠
   if(!strstr(uri, "cgi-bin")){
     // 정적 컨텐츠면 CGI 인자 스트링 지우고
     strcpy(cgiargs, "");
